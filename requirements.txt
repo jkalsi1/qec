@@ -1,0 +1,9 @@
+qiskit
+qiskit-aer
+pymatching
+numpy
+matplotlib
+seaborn
+jupyter
+pytest
+pandas
