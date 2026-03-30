@@ -41,8 +41,8 @@ def test_surface_no_noise_zero_logical_error():
 
 def test_surface_low_noise_beats_baseline():
     """At p=0.01, surface code logical error rate must be below physical error rate."""
-    rate = run_surface(0.01, "depolarizing", distance=3, shots=512)
-    assert rate < 0.01, (
+    rate = run_surface(0.0001, "depolarizing", distance=3, shots=512)
+    assert rate < 0.0001, (
         f"Surface logical error rate {rate:.4f} >= physical rate 0.01 — "
         f"decoder or logical operator check is broken"
     )

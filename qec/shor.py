@@ -5,68 +5,87 @@ from typing import Optional, Tuple
 
 
 def run_shor(p: float, error_type: str, shots: int = 1024) -> float:
-    """Simulate the Shor code under noise and return the logical error rate."""
-    circuit = stim.Circuit()
+    """Simulate Shor code using Stim TableauSimulator for correct mid-circuit
+    classical feedforward. Returns logical error rate."""
+    import random
 
-    # --- Encoding (noiseless) ---
-    circuit.append("H", [0])
-    circuit.append("CNOT", [0, 3])
-    circuit.append("CNOT", [0, 6])
-    circuit.append("H", [3])
-    circuit.append("H", [6])
-    circuit.append("CNOT", [0, 1])
-    circuit.append("CNOT", [0, 2])
-    circuit.append("CNOT", [3, 4])
-    circuit.append("CNOT", [3, 5])
-    circuit.append("CNOT", [6, 7])
-    circuit.append("CNOT", [6, 8])
+    correction_table = {
+        (1,0,0,0,0,0): 0,
+        (1,1,0,0,0,0): 1,
+        (0,1,0,0,0,0): 2,
+        (0,0,1,0,0,0): 3,
+        (0,0,1,1,0,0): 4,
+        (0,0,0,1,0,0): 5,
+        (0,0,0,0,1,0): 6,
+        (0,0,0,0,1,1): 7,
+        (0,0,0,0,0,1): 8,
+    }
 
-    # --- Noise applied ONLY to data qubits, ONLY after encoding ---
-    if p > 0:
-        if error_type == "bit_flip":
-            circuit.append("X_ERROR", [0,1,2,3,4,5,6,7,8], p)
-        elif error_type == "phase_flip":
-            circuit.append("Z_ERROR", [0,1,2,3,4,5,6,7,8], p)
-        elif error_type in ("depolarizing", "combined"):
-            circuit.append("DEPOLARIZE1", [0,1,2,3,4,5,6,7,8], p)
+    errors = 0
+    for _ in range(shots):
+        sim = stim.TableauSimulator()
 
-    # --- Syndrome measurement (noiseless) ---
-    circuit.append("CNOT", [0, 9])
-    circuit.append("CNOT", [1, 9])
-    circuit.append("CNOT", [1, 10])
-    circuit.append("CNOT", [2, 10])
-    circuit.append("CNOT", [3, 11])
-    circuit.append("CNOT", [4, 11])
-    circuit.append("CNOT", [4, 12])
-    circuit.append("CNOT", [5, 12])
-    circuit.append("CNOT", [6, 13])
-    circuit.append("CNOT", [7, 13])
-    circuit.append("CNOT", [7, 14])
-    circuit.append("CNOT", [8, 14])
-    circuit.append("M", [9, 10, 11, 12, 13, 14])
+        # --- Encode ---
+        sim.h(0)
+        sim.cnot(0, 3); sim.cnot(0, 6)
+        sim.h(3); sim.h(6)
+        sim.cnot(0, 1); sim.cnot(0, 2)
+        sim.cnot(3, 4); sim.cnot(3, 5)
+        sim.cnot(6, 7); sim.cnot(6, 8)
 
-    # --- Decode circuit (noiseless) ---
-    circuit.append("CNOT", [6, 8])
-    circuit.append("CNOT", [6, 7])
-    circuit.append("CNOT", [3, 5])
-    circuit.append("CNOT", [3, 4])
-    circuit.append("CNOT", [0, 2])
-    circuit.append("CNOT", [0, 1])
-    circuit.append("H", [6])
-    circuit.append("H", [3])
-    circuit.append("CNOT", [0, 6])
-    circuit.append("CNOT", [0, 3])
-    circuit.append("H", [0])
+        # --- Noise: apply errors independently per qubit ---
+        if p > 0:
+            for q in range(9):
+                if error_type == "bit_flip":
+                    if random.random() < p:
+                        sim.x(q)
+                elif error_type == "phase_flip":
+                    if random.random() < p:
+                        sim.z(q)
+                elif error_type in ("depolarizing", "combined"):
+                    r = random.random()
+                    if r < p / 3:
+                        sim.x(q)
+                    elif r < 2 * p / 3:
+                        sim.z(q)
+                    elif r < p:
+                        sim.y(q)
 
-    # --- Measure logical qubit ---
-    circuit.append("M", [0])
+        # --- Syndrome measurement ---
+        sim.cnot(0, 9);  sim.cnot(1, 9)
+        sim.cnot(1, 10); sim.cnot(2, 10)
+        sim.cnot(3, 11); sim.cnot(4, 11)
+        sim.cnot(4, 12); sim.cnot(5, 12)
+        sim.cnot(6, 13); sim.cnot(7, 13)
+        sim.cnot(7, 14); sim.cnot(8, 14)
 
-    sampler = circuit.compile_sampler()
-    samples = sampler.sample(shots)
+        s0 = sim.measure(9)
+        s1 = sim.measure(10)
+        s2 = sim.measure(11)
+        s3 = sim.measure(12)
+        s4 = sim.measure(13)
+        s5 = sim.measure(14)
+        syndrome = (int(s0), int(s1), int(s2), int(s3), int(s4), int(s5))
 
-    # samples: (shots, 7) — cols 0-5 are syndrome, col 6 is logical
-    logical_bits = samples[:, 6]
-    return float(np.mean(logical_bits))
+        # --- Classical correction ---
+        qubit_to_fix = correction_table.get(syndrome, None)
+        if qubit_to_fix is not None:
+            sim.x(qubit_to_fix)
+
+        # --- Decode ---
+        sim.cnot(6, 8); sim.cnot(6, 7)
+        sim.cnot(3, 5); sim.cnot(3, 4)
+        sim.cnot(0, 2); sim.cnot(0, 1)
+        sim.h(6); sim.h(3)
+        sim.cnot(0, 6); sim.cnot(0, 3)
+        sim.h(0)
+
+        # --- Measure logical qubit ---
+        logical = int(sim.measure(0))
+        if logical == 1:
+            errors += 1
+
+    return errors / shots
 
 
 def encode_shor(qc, q) -> None:
